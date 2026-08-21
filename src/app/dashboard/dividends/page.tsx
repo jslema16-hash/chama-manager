@@ -1,59 +1,76 @@
-import { createClient } from '@/lib/supabase/server'
+﻿import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import { signOut } from '../actions'
-import ChangePasswordForm from './change-password-form'
 
-export default async function MemberPage() {
+export default async function DividendsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
-  if (!profile || profile.role !== 'member') redirect('/dashboard')
+  const { data: profile } = await supabase.from('profiles').select('*, chamas(*)').eq('id', user.id).single()
+  if (!profile || profile.role !== 'admin') redirect('/dashboard')
 
-  const { data: member } = await supabase.from('members').select('*').eq('profile_id', user.id).single()
+  const chama = profile.chamas
 
-  const { data: contributions } = await supabase
-    .from('contributions').select('amount, week_date').eq('member_id', member?.id).order('week_date', { ascending: false })
+  const { data: members } = await supabase.from('members').select('id, full_name').eq('chama_id', chama.id)
+  const { data: contributions } = await supabase.from('contributions').select('member_id, amount').eq('chama_id', chama.id)
+  const { data: loans } = await supabase.from('loans').select('amount_repaid').eq('chama_id', chama.id)
 
-  const { data: loans } = await supabase
-    .from('loans').select('*').eq('member_id', member?.id)
-
-  const totalContributed = contributions?.reduce((s, c) => s + Number(c.amount), 0) || 0
-
-  if (profile.must_change_password) {
-    return <ChangePasswordForm />
+  const contribByMember = new Map()
+  for (const c of contributions || []) {
+    contribByMember.set(c.member_id, (contribByMember.get(c.member_id) || 0) + Number(c.amount))
   }
+  const totalContributions = [...contribByMember.values()].reduce((a, b) => a + b, 0)
+  const totalInterestCollected = (loans || []).reduce((sum, l) => sum + Number(l.amount_repaid), 0)
+
+  const method = chama.dividend_method
+  const dividendPool = method === 'contribution_plus_interest' ? totalContributions + totalInterestCollected : totalContributions
+  const memberCount = members?.length || 0
+
+  const rows = (members || []).map((m) => {
+    const contributed = contribByMember.get(m.id) || 0
+    let share = 0
+    if (method === 'equal') {
+      share = memberCount > 0 ? dividendPool / memberCount : 0
+    } else {
+      share = totalContributions > 0 ? (contributed / totalContributions) * dividendPool : 0
+    }
+    return { ...m, contributed, share }
+  })
+
+  const methodLabel = method === 'contribution_only' ? 'By contribution amount' : method === 'contribution_plus_interest' ? 'By contribution + interest share' : 'Equal split'
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
-      <header className="border-b border-neutral-800 px-6 py-4 flex justify-between items-center">
-        <h1 className="text-lg font-semibold">Welcome, {profile.full_name}</h1>
-        <form action={signOut}><button className="text-neutral-400 hover:text-white text-sm">Sign out</button></form>
+      <header className="border-b border-neutral-800 px-6 py-4">
+        <a href="/dashboard" className="text-neutral-400 hover:text-white text-sm">Back to dashboard</a>
+        <h1 className="text-lg font-semibold mt-2">Dividends</h1>
+        <p className="text-neutral-500 text-sm">Method: {methodLabel}</p>
       </header>
+
       <main className="p-6 max-w-2xl mx-auto space-y-6">
-        <div className="bg-neutral-900 rounded-xl p-4 border border-neutral-800">
-          <p className="text-neutral-400 text-sm">Your Total Contributions</p>
-          <p className="text-2xl font-semibold mt-1">KES {totalContributed.toLocaleString()}</p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-neutral-900 rounded-xl p-4 border border-neutral-800">
+            <p className="text-neutral-400 text-sm">Total Pool</p>
+            <p className="text-2xl font-semibold mt-1">KES {dividendPool.toLocaleString()}</p>
+          </div>
+          <div className="bg-neutral-900 rounded-xl p-4 border border-neutral-800">
+            <p className="text-neutral-400 text-sm">Interest Collected</p>
+            <p className="text-2xl font-semibold mt-1">KES {totalInterestCollected.toLocaleString()}</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-sm font-medium text-neutral-400 mb-2">Your Contribution History</h2>
-          {contributions?.map((c, i) => (
-            <div key={i} className="bg-neutral-900 rounded-lg p-3 border border-neutral-800 flex justify-between mb-2">
-              <span className="text-sm">{c.week_date}</span>
-              <span className="font-medium">KES {Number(c.amount).toLocaleString()}</span>
+
+        <div className="space-y-2">
+          <h2 className="text-sm font-medium text-neutral-400">Member breakdown</h2>
+          {rows.map((r) => (
+            <div key={r.id} className="bg-neutral-900 rounded-lg p-4 border border-neutral-800 flex justify-between items-center">
+              <div>
+                <p className="font-medium">{r.full_name}</p>
+                <p className="text-neutral-500 text-xs">Contributed: KES {r.contributed.toLocaleString()}</p>
+              </div>
+              <p className="font-semibold text-emerald-400">KES {r.share.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
             </div>
           ))}
-        </div>
-        <div>
-          <h2 className="text-sm font-medium text-neutral-400 mb-2">Your Loans</h2>
-          {loans?.map((l) => (
-            <div key={l.id} className="bg-neutral-900 rounded-lg p-3 border border-neutral-800 mb-2">
-              <p className="text-sm">KES {Number(l.amount).toLocaleString()} at {l.interest_rate}% ({l.interest_period})</p>
-              <p className="text-neutral-500 text-xs">Repaid: KES {Number(l.amount_repaid).toLocaleString()} — {l.status}</p>
-            </div>
-          ))}
-          {loans?.length === 0 && <p className="text-neutral-500 text-sm">No loans.</p>}
+          {rows.length === 0 && <p className="text-neutral-500 text-sm">No members yet.</p>}
         </div>
       </main>
     </div>
